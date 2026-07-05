@@ -90,39 +90,141 @@ def predict_range(battery_capacity, efficiency):
     r2_score = model.score(X, y)
     return prediction[0], r2_score
 
+def _fmt_vehicle_row(row):
+    return (f"{row['brand']} {row['model']}: {row['range_km']:.0f} km range, "
+            f"{row['top_speed_kmh']:.0f} km/h top speed, {row['battery_capacity_kWh']:.1f} kWh battery, "
+            f"{row['efficiency_wh_per_km']:.0f} Wh/km efficiency")
+
+
+def _brand_summary(df, brand):
+    subset = df[df['brand'].str.lower() == brand]
+    if subset.empty:
+        return None
+    return (f"🏷️ **{subset['brand'].iloc[0]}** ({len(subset)} models):\n"
+            f"• Avg range: {subset['range_km'].mean():.0f} km\n"
+            f"• Avg top speed: {subset['top_speed_kmh'].mean():.0f} km/h\n"
+            f"• Avg battery: {subset['battery_capacity_kWh'].mean():.1f} kWh\n"
+            f"• Avg efficiency: {subset['efficiency_wh_per_km'].mean():.0f} Wh/km\n"
+            f"• Best model by range: {subset.loc[subset['range_km'].idxmax(), 'model']} "
+            f"({subset['range_km'].max():.0f} km)")
+
+
 def analyze_query(query, df):
-    """AI-powered query analysis"""
-    query = query.lower()
-    
-    if 'range' in query and 'battery' in query:
-        return "🔋 **Battery vs Range Analysis**: EVs with larger batteries generally have longer ranges, but efficiency varies significantly between models. The correlation between battery capacity and range is approximately 0.85."
-    
-    elif 'speed' in query and 'performance' in query:
-        return "🏁 **Speed Performance**: High-performance EVs typically have top speeds above 200 km/h, with acceleration times under 4 seconds for 0-100 km/h. Tesla and Porsche lead in performance metrics."
-    
-    elif 'efficiency' in query or 'consumption' in query:
-        return "⚡ **Efficiency Analysis**: The most efficient EVs achieve 120-150 Wh/km, while larger vehicles consume 200-300 Wh/km. Efficiency is crucial for maximizing range from battery capacity."
-    
-    elif 'brand' in query and 'compare' in query:
+    """Answer natural-language questions by computing directly over the EV dataset."""
+    if not query or not query.strip():
+        return "🤖 Ask a question like *'which brand has the longest range?'* or *'compare Audi and BMW'*."
+
+    q = query.lower()
+    known_brands = sorted(df['brand'].dropna().str.lower().unique(), key=len, reverse=True)
+    mentioned_brands = [b for b in known_brands if b in q]
+
+    superlative = 'most' in q or 'longest' in q or 'highest' in q or 'best' in q or 'biggest' in q or 'largest' in q or 'fastest' in q or 'quickest' in q
+    inferior = 'least' in q or 'shortest' in q or 'lowest' in q or 'worst' in q or 'smallest' in q or 'slowest' in q
+
+    # Compare two specific brands
+    if len(mentioned_brands) >= 2 and ('compare' in q or 'vs' in q or 'versus' in q or True):
+        parts = [_brand_summary(df, b) for b in mentioned_brands[:2]]
+        parts = [p for p in parts if p]
+        if parts:
+            return "🔍 **Brand Comparison**\n\n" + "\n\n".join(parts)
+
+    # Single brand lookup
+    if len(mentioned_brands) == 1:
+        summary = _brand_summary(df, mentioned_brands[0])
+        if summary:
+            return summary
+
+    # "Which brand has the longest/shortest range" -> brand-level ranking, not a single vehicle
+    if 'brand' in q and 'range' in q and (superlative or inferior):
+        brand_avg = df.groupby('brand')['range_km'].mean().sort_values(ascending=inferior)
+        top = brand_avg.head(5)
+        label = "Shortest" if inferior else "Longest"
+        return (f"🔋 **{label} average range by brand**: **{top.index[0]}** leads at {top.iloc[0]:.0f} km.\n\n"
+                + "\n".join([f"• {b}: {v:.0f} km" for b, v in top.items()]))
+
+    # Range questions (single vehicle)
+    if 'range' in q and ('longest' in q or 'highest' in q or 'best' in q or 'most' in q or 'max' in q):
+        row = df.loc[df['range_km'].idxmax()]
+        return f"🔋 **Longest range (single model)**: {_fmt_vehicle_row(row)}"
+    if 'range' in q and inferior:
+        row = df.loc[df['range_km'].idxmin()]
+        return f"🔋 **Shortest range (single model)**: {_fmt_vehicle_row(row)}"
+
+    # "Which brand is fastest / has the highest battery" -> brand-level ranking
+    if 'brand' in q and ('speed' in q or 'fastest' in q) and (superlative or inferior):
+        brand_avg = df.groupby('brand')['top_speed_kmh'].mean().sort_values(ascending=inferior)
+        top = brand_avg.head(5)
+        return (f"🏁 **{'Slowest' if inferior else 'Fastest'} average top speed by brand**: "
+                f"**{top.index[0]}** leads at {top.iloc[0]:.0f} km/h.\n\n"
+                + "\n".join([f"• {b}: {v:.0f} km/h" for b, v in top.items()]))
+    if 'brand' in q and 'battery' in q and (superlative or inferior):
+        brand_avg = df.groupby('brand')['battery_capacity_kWh'].mean().sort_values(ascending=inferior)
+        top = brand_avg.head(5)
+        return (f"⚡ **{'Smallest' if inferior else 'Largest'} average battery by brand**: "
+                f"**{top.index[0]}** leads at {top.iloc[0]:.1f} kWh.\n\n"
+                + "\n".join([f"• {b}: {v:.1f} kWh" for b, v in top.items()]))
+
+    # Speed / performance questions (single vehicle)
+    if ('speed' in q or 'fastest' in q or 'quickest' in q) and (superlative or 'speed' in q):
+        row = df.loc[df['top_speed_kmh'].idxmax()]
+        return f"🏁 **Fastest top speed (single model)**: {_fmt_vehicle_row(row)}"
+    if 'acceleration' in q or '0-100' in q or '0 to 100' in q:
+        row = df.loc[df['acceleration_0_100_s'].idxmin()]
+        return f"🏎️ **Quickest 0-100 km/h**: {_fmt_vehicle_row(row)} ({row['acceleration_0_100_s']:.1f}s)"
+
+    # Battery questions
+    if 'battery' in q and superlative:
+        row = df.loc[df['battery_capacity_kWh'].idxmax()]
+        return f"⚡ **Largest battery**: {_fmt_vehicle_row(row)}"
+    if 'battery' in q and inferior:
+        row = df.loc[df['battery_capacity_kWh'].idxmin()]
+        return f"⚡ **Smallest battery**: {_fmt_vehicle_row(row)}"
+
+    # Efficiency questions (lower Wh/km = more efficient)
+    if 'efficien' in q or 'consumption' in q:
+        if inferior or 'worst' in q:
+            row = df.loc[df['efficiency_wh_per_km'].idxmax()]
+            label = "Least efficient"
+        else:
+            row = df.loc[df['efficiency_wh_per_km'].idxmin()]
+            label = "Most efficient"
+        return f"⚡ **{label}**: {_fmt_vehicle_row(row)}"
+
+    # Range vs battery relationship
+    if 'range' in q and 'battery' in q:
+        corr = df['range_km'].corr(df['battery_capacity_kWh'])
+        return (f"🔋 **Battery vs Range Analysis**: EVs with larger batteries generally have longer ranges. "
+                f"The actual correlation across all {len(df)} models in this dataset is **{corr:.2f}**.")
+
+    # Brand ranking / comparison
+    if 'brand' in q and ('compare' in q or 'top' in q or 'best' in q or 'rank' in q):
         top_brands = df.groupby('brand')['range_km'].mean().sort_values(ascending=False).head(5)
-        return f"🏷️ **Top 5 Brands by Average Range**:\n" + "\n".join([f"• {brand}: {range_val:.0f} km" for brand, range_val in top_brands.items()])
-    
-    elif 'segment' in query:
+        return "🏷️ **Top 5 Brands by Average Range**:\n" + "\n".join(
+            [f"• {brand}: {range_val:.0f} km" for brand, range_val in top_brands.items()])
+
+    # Segment questions
+    if 'segment' in q:
         segment_stats = df.groupby('segment_category').agg({
             'range_km': 'mean',
             'battery_capacity_kWh': 'mean',
             'top_speed_kmh': 'mean'
-        }).round(1)
-        return f"📦 **Segment Analysis**:\n{segment_stats.to_string()}"
-    
-    elif 'charging' in query:
-        return "🔌 **Charging Infrastructure**: Fast charging capabilities range from 50kW to 350kW. Higher charging power reduces charging time but requires compatible infrastructure."
-    
-    elif 'trend' in query or 'future' in query:
-        return "📈 **Market Trends**: EVs are trending toward larger batteries (80-100 kWh), faster charging (150-350 kW), and improved efficiency. Range anxiety is decreasing as technology advances."
-    
-    else:
-        return "🤖 **General Insights**: The EV market is rapidly evolving with improvements in battery technology, charging infrastructure, and overall efficiency. Key factors include range, charging speed, and cost-effectiveness."
+        }).round(1).sort_values('range_km', ascending=False)
+        return f"📦 **Segment Analysis** (avg range/battery/speed):\n{segment_stats.to_string()}"
+
+    # Charging questions
+    if 'charging' in q or 'charge' in q:
+        row = df.loc[df['fast_charging_power_kw_dc'].idxmax()]
+        return (f"🔌 **Charging**: Fast-charging power in this dataset ranges from "
+                f"{df['fast_charging_power_kw_dc'].min():.0f} kW to {df['fast_charging_power_kw_dc'].max():.0f} kW "
+                f"(avg {df['fast_charging_power_kw_dc'].mean():.0f} kW). "
+                f"Fastest-charging model: {row['brand']} {row['model']} at {row['fast_charging_power_kw_dc']:.0f} kW.")
+
+    # Market trend / general summary fallback, still grounded in real numbers
+    total = len(df)
+    return (f"🤖 **Market Snapshot** ({total} models, {df['brand'].nunique()} brands): "
+            f"avg range {df['range_km'].mean():.0f} km, avg battery {df['battery_capacity_kWh'].mean():.1f} kWh, "
+            f"avg top speed {df['top_speed_kmh'].mean():.0f} km/h. "
+            f"Try asking about a specific brand, or 'longest range', 'fastest', 'most efficient', or 'compare X and Y'.")
 
 def create_overview_dashboard():
     """Create overview dashboard with key metrics"""

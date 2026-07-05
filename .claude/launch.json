@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ev-dash-dashboard",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["src/dashboards/ev_dash_dashboard.py"],
+      "port": 8050
+    },
+    {
+      "name": "ev-streamlit-dashboard",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "streamlit", "run", "src/dashboards/ev_streamlit_dashboard.py", "--server.port", "8501", "--server.address", "localhost", "--browser.gatherUsageStats", "false"],
+      "port": 8501
+    },
+    {
+      "name": "ev-gradio-dashboard",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["src/dashboards/ev_gradio_dashboard.py", "--port", "7861"],
+      "port": 7861
+    }
+  ]
+}
